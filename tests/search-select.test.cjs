@@ -5,15 +5,19 @@ const t = (name, cond) => { cond ? passed++ : (failed++, console.log('  FAIL:', 
 // 复刻组件逻辑：matches / ordered / sections
 const makeLogic = (recent) => {
   const recentSet = new Set(recent)
+  // 组匹配含路由 id（轮询组呈现名可能全部相同，搜 id 片段才能定位到组）
   const matches = (group, model, qLower) => {
     if (!qLower) return true
     return (group.name || group.id || '').toLowerCase().includes(qLower)
+      || (group.id || '').toLowerCase().includes(qLower)
       || (model.name || '').toLowerCase().includes(qLower)
       || (model.id || '').toLowerCase().includes(qLower)
       || (model.description || '').toLowerCase().includes(qLower)
   }
   const build = (groups, q) => {
     const qLower = q.trim().toLowerCase()
+    const dupNames = new Map()
+    for (const g of groups) { const n = g.name || g.id; dupNames.set(n, (dupNames.get(n) || 0) + 1) }
     let ordered = groups
     if (!qLower && recentSet.size > 0) {
       const rank = new Map(recent.map((p, i) => [p, i]))
@@ -27,7 +31,8 @@ const makeLogic = (recent) => {
     for (const g of ordered) {
       const rows = (g.models || []).filter((m) => matches(g, m, qLower))
       if (rows.length === 0) continue
-      sections.push({ g, rows, isTop: !qLower && recentSet.has(g.id) })
+      const isDup = (dupNames.get(g.name || g.id) || 0) > 1 && g.id !== g.name
+      sections.push({ g, rows, isTop: !qLower && recentSet.has(g.id), isDup })
     }
     return { ordered, sections }
   }
@@ -224,6 +229,22 @@ const applyIfChanged = (prev, order) => (prev.join('\u0000') === order.join('\u0
   t('R4 顺序相同应用原引用', applyIfChanged(prev, ['a', 'b']) === prev)
   const next = applyIfChanged(prev, ['b', 'a'])
   t('R5 顺序变化应用新数组', next !== prev && next.join(',') === 'b,a')
+}
+
+
+// SG: 轮询组重名场景——路由 id 搜索可定位 + 重名组标记
+{
+  const groups = [
+    { id: 'roundrobin/minimax-m3', name: 'RoundRobin', models: [{ id: 'minimax-m3', name: 'RoundRobin' }] },
+    { id: 'roundrobin/glm', name: 'RoundRobin', models: [{ id: 'glm', name: 'RoundRobin' }] },
+    { id: 'bohe', name: 'BOHE', models: [{ id: 'minimax-m3', name: 'M3' }] },
+  ]
+  const build = makeLogic([])
+  t('SG1a 搜路由 id 片段定位到组', build(groups, 'glm').sections.length === 1 && build(groups, 'glm').sections[0].g.id === 'roundrobin/glm')
+  const dup = build(groups, '').sections.filter((s) => s.isDup)
+  t('SG1b 重名组标记 isDup', dup.length === 2)
+  t('SG1c 非重名不标记', build(groups, '').sections.find((s) => s.g.id === 'bohe').isDup === false)
+  t('SG1d id!==name 才标后缀', (() => { const g2 = [{ id: 'same', name: 'same', models: [{ id: 'x', name: 'x' }] }, { id: 'other2', name: 'same', models: [{ id: 'y', name: 'y' }] }]; const s = makeLogic([])(g2, '').sections; return s.find((x) => x.g.id === 'same').isDup === false && s.find((x) => x.g.id === 'other2').isDup === true })())
 }
 
 console.log(`\n${passed} passed, ${failed} failed`)

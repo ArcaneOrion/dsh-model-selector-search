@@ -34,7 +34,8 @@ window.__ModuleLoader__.load({
 .mcm-sel-clear:hover { color:var(--dsw-alias-label-primary); }
 .mcm-sel-list { min-height:0; overflow-y:auto; overscroll-behavior:contain; }
 /* 组头：sticky 钉在滚动容器顶部（对齐原生 groupTitle） */
-.mcm-sel-group { position:sticky; top:0; z-index:1; padding:5px 8px 3px; background:var(--dsw-specific-menu); color:var(--dsw-alias-label-tertiary); font-size:12px; line-height:18px; font-weight:500; display:flex; align-items:center; gap:6px; }
+.mcm-sel-group { position:sticky; top:0; z-index:1; padding:5px 8px 3px; background:var(--dsw-specific-menu); color:var(--dsw-alias-label-tertiary); font-size:12px; line-height:18px; font-weight:500; display:flex; align-items:center; gap:6px; min-width:0; }
+.mcm-sel-group-id { flex:0 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--dsw-alias-label-dimmed); font-size:10px; font-weight:400; font-family:var(--ds-font-family-code); }
 .mcm-sel-group + * { margin-top:0; }
 .mcm-sel-recent { color:var(--dsw-alias-brand-primary); font-size:10px; font-weight:500; }
 /* 模型行：38px 两行式——名称 14/20/500，描述 12/18 tertiary 排名称下方；
@@ -165,10 +166,12 @@ window.__ModuleLoader__.load({
       const groups = (state && state.groups) || []
       const current = state && state.current
       const busy = state && state.status === 'selecting'
-      // 搜索索引：匹配字段随目录快照预小写，键击过滤不再逐字段 toLowerCase
+      // 搜索索引：匹配字段随目录快照预小写，键击过滤不再逐字段 toLowerCase。
+      // 组匹配含路由 id（轮询组呈现名可能全部相同，搜 id 片段才能定位到组）
       const matchIndex = useMemo(() => groups.map((g) => ({
         g,
         gname: (g.name || g.id || '').toLowerCase(),
+        gid: (g.id || '').toLowerCase(),
         models: (g.models || []).map((m) => ({
           m,
           name: (m.name || '').toLowerCase(),
@@ -176,20 +179,30 @@ window.__ModuleLoader__.load({
           desc: (m.description || '').toLowerCase(),
         })),
       })), [groups])
+      // 展示名重复计数：重名组（如多个都叫 RoundRobin 的轮询组）在组头补充路由 id 后缀
+      const dupNames = useMemo(() => {
+        const counts = new Map()
+        for (const g of groups) {
+          const n = g.name || g.id
+          counts.set(n, (counts.get(n) || 0) + 1)
+        }
+        return counts
+      }, [groups])
       if (!available) return null
-      // 渲染体：过滤后的组列表（组名命中显示全组模型=provider 维度搜索意图；
+      // 渲染体：过滤后的组列表（组名或路由 id 命中显示全组模型=provider 维度搜索意图；
       // 无搜索时全量+置顶标记）
       const sections = []
       for (const gi of matchIndex) {
         const all = gi.models.map((x) => x.m)
         const rows = !qLower
           ? all
-          : (gi.gname.includes(qLower)
+          : (gi.gname.includes(qLower) || gi.gid.includes(qLower)
             ? all
             : gi.models.filter((mi) => mi.name.includes(qLower) || mi.id.includes(qLower) || mi.desc.includes(qLower)).map((x) => x.m))
         if (rows.length === 0) continue
         const isTop = !qLower && recent.includes(gi.g.id)
-        sections.push({ g: gi.g, rows, isTop })
+        const isDup = (dupNames.get(gi.g.name || gi.g.id) || 0) > 1
+        sections.push({ g: gi.g, rows, isTop, isDup })
       }
       // 置顶重排：仅无搜索时按 recent 顺序提升（未提及的按原序 append）
       let ordered = sections
@@ -307,10 +320,12 @@ window.__ModuleLoader__.load({
         if (ordered.length === 0) {
           modelsChildren.push(el('div', { className: 'mcm-sel-status' }, qLower ? '无匹配「' + q.trim() + '」的模型' : '暂无可用模型'))
         } else {
-          for (const { g, rows, isTop } of ordered) {
+          for (const { g, rows, isTop, isDup } of ordered) {
             modelsChildren.push(el('div', { key: g.id },
               el('div', { className: 'mcm-sel-group' },
                 el('span', null, hlParts(g.name || g.id, qLower)),
+                // 展示名重复的组补充路由 id 后缀（如多个轮询组都叫 RoundRobin）
+                isDup && g.id !== g.name ? el('span', { className: 'mcm-sel-group-id', title: g.id }, g.id) : null,
                 isTop ? el('span', { className: 'mcm-sel-recent' }, '· 最近') : null
               ),
               rows.map((m) => modelRow(g, m, qLower))
