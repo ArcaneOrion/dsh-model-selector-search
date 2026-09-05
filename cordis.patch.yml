@@ -1,0 +1,6 @@
+# Bundle patch layer：宿主条目为无操作占位（client-only 插件）；
+# `dsh.client` 声明使 web app 加载 ./client bundle 作为浏览器半。
+
+- insert:
+    - id: model-selector-search
+      name: '@arcaneorion/dsh-model-selector-search'
