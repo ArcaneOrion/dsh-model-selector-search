@@ -135,11 +135,17 @@ window.__ModuleLoader__.load({
       const lastActionRef = useRef('load')
       const qLower = q.trim().toLowerCase()
 
+      // 挂载/换会话即加载目录：pill 立刻显示会话当前模型（含继承的默认），
+      // 而不是等首次打开菜单后才从「模型」占位变成具体名
+      useEffect(() => {
+        if (!available) return
+        lastActionRef.current = 'load'
+        if (load) load()
+      }, [available, load])
       // 打开菜单时：置顶用缓存即时渲染（消除打开跳变）；缓存过期才后台刷新；
       // 目录加载 + 复位面板
       useEffect(() => {
         if (!open) return
-        lastActionRef.current = 'load'
         if (load) load()
         setRecent(selHealthCache.order)
         if (Date.now() - selHealthCache.at >= RECENT_TTL) {
@@ -239,6 +245,12 @@ window.__ModuleLoader__.load({
         ...(reasoning.efforts || []).map((l) => ({ key: 'effort:' + l.id, effort: l.id, label: l.name, description: l.description })),
       ]
       const modelLabel = currentChoice ? (currentChoice.m.name || currentChoice.m.id) : '模型'
+      // 展示名重复（如多个轮询组都叫 RoundRobin）时，模型行/触发器/root 值都要
+      // 能自证身份：补充模型 id（对轮询组即组 id，如 minimax-m3）
+      const chosenDup = currentChoice ? (dupNames.get(currentChoice.m.name || currentChoice.m.id) || 0) > 1 : false
+      const modelDisplay = currentChoice && chosenDup && currentChoice.m.id !== modelLabel
+        ? modelLabel + ' · ' + currentChoice.m.id
+        : modelLabel
       // 注入面的 select 把失败吞成 false 值（不 reject），错误详情在 store.error——
       // 对齐原生 settleSelection：false 时读 store.error 展示，成功才关菜单
       const settleSelection = (accepted) => {
@@ -246,12 +258,26 @@ window.__ModuleLoader__.load({
         const msg = safeStore.getSnapshot().error
         setSelError(msg || '选择未被接受')
       }
+      // 选新模型的默认思考档：含 max 用 max，否则取档位列表最高档（末项）；
+      // 无 reasoning 元数据不带 effort 键（交供应商默认）。用户多数场景用 max，
+      // 免去每次手动调档。
+      const pickDefaultEffort = (m) => {
+        if (!m || !m.reasoning) return undefined
+        const ids = (m.reasoning.efforts || []).map((l) => l.id)
+        if (ids.length === 0) return undefined
+        return ids.includes('max') ? 'max' : ids[ids.length - 1]
+      }
       const choose = (provider, model) => {
         if (current && current.provider === provider && current.model === model) { setOpen(false); return }
         if (!select) return
         setSelError(null)
         lastActionRef.current = 'select'
-        Promise.resolve(select({ provider, model })).then(settleSelection).catch((e) => {
+        const g = groups.find((x) => x.id === provider)
+        const m = g && (g.models || []).find((mm) => mm.id === model)
+        const effort = pickDefaultEffort(m)
+        const payload = { provider, model }
+        if (effort !== undefined) payload.reasoningEffort = effort
+        Promise.resolve(select(payload)).then(settleSelection).catch((e) => {
           setSelError(String((e && e.message) || e))
         })
       }
@@ -290,6 +316,9 @@ window.__ModuleLoader__.load({
         el('div', { key: 'fail_' + f.id, className: 'mcm-sel-failrow', title: f.message }, '⚠ ' + (f.name || f.id) + '：' + f.message))
       const modelRow = (g, m, q2) => {
         const sel = current && current.provider === g.id && current.model === m.id
+        // 重名组的模型行描述位显示模型 id（自证身份）；已有描述或 id===name 不重复
+        const groupDup = (dupNames.get(g.name || g.id) || 0) > 1
+        const desc = m.description || (groupDup && m.id !== m.name ? m.id : null)
         return el('button', {
           key: g.id + '::' + m.id, className: 'mcm-sel-opt', type: 'button', role: 'menuitemradio', 'aria-checked': sel,
           title: m.id, disabled: busy,
@@ -297,7 +326,7 @@ window.__ModuleLoader__.load({
         },
           el('span', { className: 'mcm-sel-copy' },
             el('span', { className: 'mcm-sel-name' }, hlParts(m.name || m.id, q2)),
-            m.description ? el('span', { className: 'mcm-sel-desc' }, m.description) : null
+            desc ? el('span', { className: 'mcm-sel-desc' }, desc) : null
           ),
           sel ? el('span', { className: 'mcm-sel-check' }, '✓') : null
         )
@@ -356,7 +385,7 @@ window.__ModuleLoader__.load({
       const rootChildren = [
         el('button', { className: 'mcm-sel-cell', type: 'button', onClick: () => setPane('models') },
           el('span', { className: 'mcm-sel-cell-label' }, '模型'),
-          el('span', { className: 'mcm-sel-cell-value' }, modelLabel),
+          el('span', { className: 'mcm-sel-cell-value' }, modelDisplay),
           el('span', { className: 'mcm-sel-cell-chevron' }, '›')
         ),
         reasoning ? el('button', { className: 'mcm-sel-cell', type: 'button', onClick: () => { setSelError(null); setPane('effort') } },
@@ -368,11 +397,11 @@ window.__ModuleLoader__.load({
 
       return el('div', { className: 'mcm-sel-root', ref: rootRef, onKeyDown },
         el('button', {
-          className: 'mcm-sel-trigger', type: 'button', disabled: locked, title: effortLabel !== undefined ? modelLabel + ' · ' + effortLabel : modelLabel,
+          className: 'mcm-sel-trigger', type: 'button', disabled: locked, title: effortLabel !== undefined ? modelDisplay + ' · ' + effortLabel : modelDisplay,
           'aria-haspopup': 'menu', 'aria-expanded': open,
           onClick: () => setOpen((v) => !v)
         },
-          el('span', { className: 'mcm-sel-trigger-label' }, modelLabel),
+          el('span', { className: 'mcm-sel-trigger-label' }, modelDisplay),
           effortLabel !== undefined ? el('span', { className: 'mcm-sel-trigger-eff' }, effortLabel) : null,
           el('span', { className: 'mcm-sel-caret', style: open ? { transform: 'rotate(180deg)' } : undefined }, '▼')
         ),
@@ -393,7 +422,7 @@ window.__ModuleLoader__.load({
           ),
           pane !== 'root' ? el('div', { className: 'mcm-sel-foot' },
             el('span', null, pane === 'effort'
-              ? '推理档位 · ' + modelLabel
+              ? '推理档位 · ' + modelDisplay
               : sections.reduce((n, s) => n + s.rows.length, 0) + ' 个模型'),
             el('span', null, pane === 'models' && recent.length > 0 && !qLower ? '置顶：近 7 天使用' : '')
           ) : null

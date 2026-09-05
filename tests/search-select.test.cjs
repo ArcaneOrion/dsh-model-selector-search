@@ -247,6 +247,47 @@ const applyIfChanged = (prev, order) => (prev.join('\u0000') === order.join('\u0
   t('SG1d id!==name 才标后缀', (() => { const g2 = [{ id: 'same', name: 'same', models: [{ id: 'x', name: 'x' }] }, { id: 'other2', name: 'same', models: [{ id: 'y', name: 'y' }] }]; const s = makeLogic([])(g2, '').sections; return s.find((x) => x.g.id === 'same').isDup === false && s.find((x) => x.g.id === 'other2').isDup === true })())
 }
 
+
+// MD: 重名组的模型行/触发器自证身份（描述位补模型 id）
+{
+  const dupNames = new Map([['RoundRobin', 2], ['BOHE', 1]])
+  const rowDesc = (gName, gId, m) => {
+    const groupDup = (dupNames.get(gName || gId) || 0) > 1
+    return m.description || (groupDup && m.id !== m.name ? m.id : null)
+  }
+  const display = (gName, gId, m) => {
+    const label = m.name || m.id
+    const dup = (dupNames.get(gName || gId) || 0) > 1
+    return dup && m.id !== label ? label + ' · ' + m.id : label
+  }
+  const rr = { id: 'roundrobin/minimax-m3', name: 'RoundRobin' }
+  const m = { id: 'minimax-m3', name: 'RoundRobin' }
+  t('MD1 重名组模型行描述位 = 模型 id', rowDesc(rr.name, rr.id, m) === 'minimax-m3')
+  t('MD2 触发器展示名补 id', display(rr.name, rr.id, m) === 'RoundRobin · minimax-m3')
+  const bohe = { id: 'bohe', name: 'BOHE' }
+  const bm = { id: 'm3', name: 'M3' }
+  t('MD3 唯一名不补', rowDesc(bohe.name, bohe.id, bm) === null && display(bohe.name, bohe.id, bm) === 'M3')
+  t('MD4 id===name 不重复', rowDesc(rr.name, rr.id, { id: 'RoundRobin', name: 'RoundRobin' }) === null)
+  t('MD5 已有描述优先', rowDesc(rr.name, rr.id, { id: 'x', name: 'RoundRobin', description: '官方' }) === '官方')
+}
+
+
+// DF: 选新模型默认思考档（含 max 用 max，否则最高档末项；无 reasoning 不带键）
+{
+  const pickDefaultEffort = (m) => {
+    if (!m || !m.reasoning) return undefined
+    const ids = (m.reasoning.efforts || []).map((l) => l.id)
+    if (ids.length === 0) return undefined
+    return ids.includes('max') ? 'max' : ids[ids.length - 1]
+  }
+  t('DF1 含 max 用 max', pickDefaultEffort({ reasoning: { efforts: [{ id: 'low' }, { id: 'medium' }, { id: 'max' }] } }) === 'max')
+  t('DF2 无 max 取最高档末项', pickDefaultEffort({ reasoning: { efforts: [{ id: 'low' }, { id: 'medium' }, { id: 'high' }] } }) === 'high')
+  t('DF3 无 reasoning undefined（负载不带 effort 键）', pickDefaultEffort({ id: 'x' }) === undefined)
+  t('DF4 efforts 空 undefined', pickDefaultEffort({ reasoning: { efforts: [] } }) === undefined)
+  const payload = (() => { const e = pickDefaultEffort({ reasoning: { efforts: [{ id: 'low' }, { id: 'max' }] } }); const p = { provider: 'a', model: 'm' }; if (e !== undefined) p.reasoningEffort = e; return p })()
+  t('DF5 负载形状', JSON.stringify(payload) === JSON.stringify({ provider: 'a', model: 'm', reasoningEffort: 'max' }))
+}
+
 console.log(`\n${passed} passed, ${failed} failed`)
   process.exit(failed > 0 ? 1 : 0)
 })
