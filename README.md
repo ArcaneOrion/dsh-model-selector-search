@@ -9,6 +9,7 @@ DSH 会话模型选择器（搜索增强），**独立 cordis client 插件**。
 - **结构对齐原生三级面板**：打开先见 root 两行入口（「模型」/「推理档位」，推理档位在底部、仅当前模型有 reasoning 元数据时渲染，原生 .cell 40px 样式）→ 钻入模型列表（搜索在这里）或档位子列表（「供应商默认」行仅在未声明 defaultEffort 时出现）；Escape 从子面板回 root 再关闭；负载对齐原生——选模型 `{provider, model}`，换档保留 provider/model 只带 `reasoningEffort`，供应商默认省略该键；触发器显示「模型名 · 档位」
 - 失败可见化：`failures` 每供应商警告行；选择被拒（注入面 false）时读 store.error 在菜单内显示，列表保留（load 失败才整页报错，用 lastAction 区分——select 失败也会把 status 置 error）
 - 置顶：近 7 天健康流水最近成功调用的 provider 按 lastTs 降序去重。**缓存优先**：打开菜单先用缓存即时渲染（无 RPC 阻塞、无重排跳变）；缓存超 2 分钟才后台刷新且仅在顺序变化时应用；插件挂载 8s 后空闲预热
+- **思考档位记忆**：包装 `modelDirectories` 服务实例的 `directoryFor(...).select`（原生 `/model` 弹窗与 composer 座位的共同 seam，原生代码零改动）——**选模型 = 该模型上次显式档位 ?? max**（无 max 声明取最高声明档）；显式换档（≠ 声明 defaultEffort）在选择**成功后**写入记忆，选择失败不污染；记忆值须仍在模型声明档位集内，配置变更后失效回落 max。本插件 `choose()` 不再自动填档（策略统一收口在拦截层，「未填档位」即自动语义）。原生弹窗对新模型自动填 `defaultEffort` 的行为在此归一为同一策略
 - a11y：Escape / 外点关闭（effort 面板先返回模型列表）、↑↓ 列表导航、aria-haspopup / expanded / menuitemradio
 - 菜单**向上展开**（座位固定在底部 composer，向下弹会整体落到视口外——从 model-channel-manager 拆出时修复）；列表 `overscroll-behavior: contain` 滚动不穿透
 
@@ -24,6 +25,7 @@ DSH 理念：一切皆插件、slots 即替换 seam、每个占座者一个独�
 
 - 目录数据流 = 复刻原生 ui-model-selection 的 inject 契约：`inject(sessionId)` 返回 `{available, directory: directoryFor(sessionId).store, load, select}`——injected face 来自**注册 options 的 inject 字段**，不传 → directory null → uSES 崩（踩坑 #20）
 - 置顶 = `api.settings.describe()` 过滤 `model-channel-health` 命名空间。该 ns 由 model-channel-manager（host 半）写入；**不存在时优雅降级为不置顶**，本插件不依赖 model-channel-manager 也能独立工作
+- 档位记忆 = `model-channels` ns 的 `effortMemory` 字段（`{['provider::model']: effortId}`）。该 ns 已过 apiproxy 白名单（mcm 面板同用它保存轮询组），schema loose 保留未知字段；读写失败静默降级为无记忆（max 兜底不受影响）。档位写路径本身仍是 `directory.select` → `sessions.selectModel`（per-session，host 单一事实源），记忆层只改写/旁听负载
 
 ## 挂载
 
@@ -36,15 +38,20 @@ client-only 插件：无 host 半、无 cordis.patch.yml（client-modules 经 `e
 
 ## 已知边界
 
-- /model 弹窗入口仍是原生平铺
+- /model 弹窗入口仍是原生平铺（其选择负载经本插件拦截层归一档位策略，弹窗 UI 未改）
 - 选择失败提示为菜单内错误行（原生是锚定 composer 的 Toast）
 - 置顶数据源是真实渠道 provider；`roundrobin/<组>` 虚拟路由自身不入健康流水，虚拟组不会出现在「最近」置顶
+- **显式选「声明 defaultEffort 同值」会被当作自动**（原生弹窗负载不可区分）：该选择被改写为记忆 ?? max 且不入记忆。轮询组 defaultEffort=max 时选 max 本就是目标值，无感知；其他模型若需锁声明默认值，请改其声明
+- 记忆按 `provider::model` 键：mcm 面板重命名 provider 后旧键失配 → 回落 max（与历史健康流水同理，不随改名迁移）
+- 停用本插件：记忆失效；轮询组仍因 mcm 声明 defaultEffort=max 而默认 max，真实模型回到原生 defaultEffort 行为
+- 依赖 `modelDirectories.directoryFor` 服务面 seam：原生重构该方法需重审（包装带 `__mcmEffortMemWrapped` 幂等标记 + WeakSet 防重复包）
 
 ## 测试
 
 ```
 node tests/search-select.test.cjs   # 置顶排序/过滤四维/7 天聚合/组名全组显示（10 用例）
 node tests/slot-priority.test.cjs   # 复刻 ui-slots SlotCore occupancy + 选举语义（4 用例，T4 静态断言本包源码）
+node tests/effort-memory.test.cjs   # 档位记忆：augmentRule 纯逻辑（显式放行/自动改写/记忆校验/回落）+ seam 静态断言
 ```
 
 ## 踩坑速记

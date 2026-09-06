@@ -7,6 +7,8 @@
  * 触发器胶囊、chevron 120ms），选择负载与原生逐字段一致。
  * 「近 7 天置顶」经 settings 公共 seam 读 model-channel-health；打开菜单先用缓存
  * 即时渲染、后台刷新且仅在顺序变化时应用（消除打开跳变）；无数据时优雅降级。
+ * 思考档位记忆：包装 modelDirectories.directoryFor 的 directory.select（/model 弹窗与
+ * composer 座位共同 seam）——选模型 = 该模型上次显式档位 ?? max；显式换档才写记忆。
  */
 window.__ModuleLoader__.load({
   id: '@arcaneorion/dsh-model-selector-search',
@@ -114,6 +116,82 @@ window.__ModuleLoader__.load({
     const RR_PREFIX = 'roundrobin/'
     const isRRGroup = (g) => typeof (g && g.id) === 'string' && g.id.startsWith(RR_PREFIX)
     const rrTag = () => el('span', { className: 'mcm-sel-rrtag' }, '轮询·')
+
+    // ---------- 思考档位记忆：选模型 = 该模型上次显式档位 ?? max ----------
+    // 拦截点在 modelDirectories 服务实例的 directoryFor(...)——原生 /model 弹窗与 composer
+    // 座位（本插件 + 原生遮蔽前的任何 face）都经它调 directory.select。原生弹窗对新模型
+    // 自动填 model.reasoning.defaultEffort（ui-model-selection client.js selectionOf），
+    // 与「用户显式选了这个值」在负载上不可区分，故以「=== 声明 defaultEffort」近似为自动。
+    // 规则（augmentRule，纯函数）：
+    //   · incoming 非空且 ≠ declared.defaultEffort → 显式选择：原样放行，select 成功后记忆
+    //   · 其余（未填档 / === defaultEffort）→ 自动：改写为 memory[key] ?? max
+    //     （memory 值须仍在模型声明档位集内，配置变更后失效记忆回落 max）
+    // 记忆存 model-channels ns 的 effortMemory 字段（apiproxy 白名单已放行、schema loose）；
+    // ns 不可读写时静默降级为无记忆，max 兜底不受影响。
+    const EFFORT_MEMORY_NS = 'model-channels'
+    const maxEffortOf = (reasoning) => {
+      const efforts = (reasoning && Array.isArray(reasoning.efforts)) ? reasoning.efforts : []
+      if (efforts.length === 0) return undefined
+      return efforts.some((l) => l.id === 'max') ? 'max' : efforts[efforts.length - 1].id
+    }
+    const augmentRule = (groups, selection, memory) => {
+      const g = (groups || []).find((x) => x.id === selection.provider)
+      const m = g && (g.models || []).find((mm) => mm.id === selection.model)
+      const declared = m && m.reasoning
+      if (!declared || !Array.isArray(declared.efforts) || declared.efforts.length === 0)
+        return { payload: selection }
+      const key = selection.provider + '::' + selection.model
+      const incoming = selection.reasoningEffort
+      if (incoming !== undefined && incoming !== declared.defaultEffort)
+        return { payload: selection, remember: { key, effort: incoming } }
+      const remembered = memory ? memory[key] : undefined
+      const effort = (remembered != null && declared.efforts.some((l) => l.id === remembered))
+        ? remembered
+        : maxEffortOf(declared)
+      if (effort === incoming) return { payload: selection }
+      return { payload: Object.assign({}, selection, { reasoningEffort: effort }) }
+    }
+    let effortMemory = null
+    const loadEffortMemory = () => {
+      if (!apiRef || !apiRef.settings || typeof apiRef.settings.describe !== 'function') return
+      apiRef.settings.describe({}).then((resp) => {
+        const r = resp && resp.result ? resp.result : resp
+        if (r && r.ok === false) return
+        const d = r && r.value !== undefined ? r.value : r
+        const cn = ((d && d.namespaces) || []).find((n) => n && n.ns === EFFORT_MEMORY_NS)
+        const mem = cn && cn.value && cn.value.effortMemory
+        effortMemory = (mem && typeof mem === 'object') ? mem : {}
+      }).catch(() => {})
+    }
+    const recordEffortMemory = (key, effort) => {
+      effortMemory = Object.assign({}, effortMemory || {}, { [key]: effort })
+      if (!apiRef || !apiRef.settings || typeof apiRef.settings.update !== 'function') return
+      apiRef.settings.update({ ns: EFFORT_MEMORY_NS, patch: { effortMemory } }).catch(() => { /* 只影响记忆，不影响本次选择 */ })
+    }
+    // directoryFor 包装：目录对象按会话缓存在 resolver 的 live Map 里（同一会话反复拿到
+    // 同一对象），WeakSet 防重复包；select 失败不写记忆（避免把未被接受的选择当作用户偏好）
+    const wrapModelDirectories = (models) => {
+      if (!models || typeof models.directoryFor !== 'function' || models.__mcmEffortMemWrapped) return
+      const origDirectoryFor = models.directoryFor.bind(models)
+      const wrappedDirs = new WeakSet()
+      models.directoryFor = (sessionId) => {
+        const dir = origDirectoryFor(sessionId)
+        if (!dir || typeof dir.select !== 'function' || wrappedDirs.has(dir)) return dir
+        const origSelect = dir.select.bind(dir)
+        dir.select = (selection) => {
+          if (!selection || typeof selection.provider !== 'string' || typeof selection.model !== 'string')
+            return origSelect(selection)
+          const snapshot = dir.store && typeof dir.store.getSnapshot === 'function' ? dir.store.getSnapshot() : null
+          const rule = augmentRule(snapshot ? snapshot.groups : null, selection, effortMemory)
+          const p = origSelect(rule.payload)
+          if (rule.remember) p.then(() => recordEffortMemory(rule.remember.key, rule.remember.effort), () => {})
+          return p
+        }
+        wrappedDirs.add(dir)
+        return dir
+      }
+      models.__mcmEffortMemWrapped = true
+    }
 
     function SearchModelSelect(props) {
       const available = props.available !== false
@@ -266,26 +344,15 @@ window.__ModuleLoader__.load({
         const msg = safeStore.getSnapshot().error
         setSelError(msg || '选择未被接受')
       }
-      // 选新模型的默认思考档：含 max 用 max，否则取档位列表最高档（末项）；
-      // 无 reasoning 元数据不带 effort 键（交供应商默认）。用户多数场景用 max，
-      // 免去每次手动调档。
-      const pickDefaultEffort = (m) => {
-        if (!m || !m.reasoning) return undefined
-        const ids = (m.reasoning.efforts || []).map((l) => l.id)
-        if (ids.length === 0) return undefined
-        return ids.includes('max') ? 'max' : ids[ids.length - 1]
-      }
+      // 选模型只带 {provider, model} 不带档位：档位策略统一在 modelDirectories 拦截层
+      // 执行（该模型上次显式档位 ?? max），「未填档位」即自动语义，与原生 /model 弹窗
+      // （自动填 defaultEffort）两入口在此归一，不会把自动值误记为用户偏好
       const choose = (provider, model) => {
         if (current && current.provider === provider && current.model === model) { setOpen(false); return }
         if (!select) return
         setSelError(null)
         lastActionRef.current = 'select'
-        const g = groups.find((x) => x.id === provider)
-        const m = g && (g.models || []).find((mm) => mm.id === model)
-        const effort = pickDefaultEffort(m)
-        const payload = { provider, model }
-        if (effort !== undefined) payload.reasoningEffort = effort
-        Promise.resolve(select(payload)).then(settleSelection).catch((e) => {
+        Promise.resolve(select({ provider, model })).then(settleSelection).catch((e) => {
           setSelError(String((e && e.message) || e))
         })
       }
@@ -453,6 +520,12 @@ window.__ModuleLoader__.load({
       }, 'model-selector: styles')
       // 空闲预热置顶缓存：首次打开菜单大概率已有数据，不打断渲染
       if (apiRef) setTimeout(() => refreshRecent(), 8000)
+      // 档位记忆：尽早拉缓存 + 包装 modelDirectories（原生 /model 弹窗不经本插件 face，
+      // 只有包在共享服务上才能让两入口同策略）
+      loadEffortMemory()
+      ctx.inject(['modelDirectories'], (scope) => {
+        wrapModelDirectories(scope.get('modelDirectories'))
+      })
       const slots = ctx.get('slots')
       if (!slots) return
       // 会话模型选择器座位替换。契约要点（实测踩坑沉淀）：
