@@ -111,6 +111,27 @@ window.__ModuleLoader__.load({
       return [s.slice(0, i), el('span', { className: 'mcm-sel-hl' }, s.slice(i, i + q.length)), s.slice(i + q.length)]
     }
 
+    // 搜索归一化：小写 + 去分隔符（- _ . / 空白），「glm53」可命中「GLM-5.3」，
+    // 组路由 id「roundrobin/coding」可按「roundrobincoding」命中。
+    // 双方同步删字符保序，归一化包含 ⊇ 原始包含——过滤走单路径归一化判断即可；
+    // 副作用：仅在归一化下才命中的查询，hlParts（原始子串 indexOf）不高亮，纯文本显示
+    const normSearch = (s) => String(s || '').toLowerCase().replace(/[-_./\s]+/g, '')
+    // 子序列判定（fzf 式兜底）：按序命中每个字符、不要求连续——「ds」可命中
+    // 「deepseek」（d..s），原始子串对缩写/首字母无能为力
+    const isSubseq = (s, q) => {
+      let at = 0
+      for (let i = 0; i < s.length && at < q.length; i++) if (s[i] === q[at]) at++
+      return at === q.length
+    }
+    // 匹配梯队：0 未命中 / 1 归一化子串 / 2 仅子序列
+    const matchTier = (hay, q) => (hay.includes(q) ? 1 : (isSubseq(hay, q) ? 2 : 0))
+    // 多字段取最优梯队（非零最小）：任一字段子串命中 = 1，全部仅子序列 = 2
+    const bestTier = (...tiers) => {
+      let best = 0
+      for (const t of tiers) if (t !== 0 && (best === 0 || t < best)) best = t
+      return best
+    }
+
     // 轮询组标记：model-channel-manager 的虚拟路由 id 以 roundrobin/ 开头。
     // 显示层加「轮询·」前缀（组头/模型行/pill），不改目录数据——原生 /model 弹窗不受影响
     const RR_PREFIX = 'roundrobin/'
@@ -218,7 +239,8 @@ window.__ModuleLoader__.load({
       // （整页错误）还是「选择失败」（列表保留，只显示错误行）——directory.select 失败
       // 也会把 store.status 置成 'error'
       const lastActionRef = useRef('load')
-      const qLower = q.trim().toLowerCase()
+      // 查询归一化（小写+去分隔符）：空 nq（空查询或纯分隔符）= 无搜索，显示全量
+      const nq = normSearch(q)
 
       // 挂载/换会话即加载目录：pill 立刻显示会话当前模型（含继承的默认），
       // 而不是等首次打开菜单后才从「模型」占位变成具体名
@@ -257,17 +279,17 @@ window.__ModuleLoader__.load({
       const groups = (state && state.groups) || []
       const current = state && state.current
       const busy = state && state.status === 'selecting'
-      // 搜索索引：匹配字段随目录快照预小写，键击过滤不再逐字段 toLowerCase。
+      // 搜索索引：匹配字段随目录快照预归一化（小写+去分隔符），键击过滤零重复计算。
       // 组匹配含路由 id（轮询组呈现名可能全部相同，搜 id 片段才能定位到组）
       const matchIndex = useMemo(() => groups.map((g) => ({
         g,
-        gname: (g.name || g.id || '').toLowerCase(),
-        gid: (g.id || '').toLowerCase(),
+        ngname: normSearch(g.name || g.id),
+        ngid: normSearch(g.id),
         models: (g.models || []).map((m) => ({
           m,
-          name: (m.name || '').toLowerCase(),
-          id: (m.id || '').toLowerCase(),
-          desc: (m.description || '').toLowerCase(),
+          nname: normSearch(m.name),
+          nid: normSearch(m.id),
+          ndesc: normSearch(m.description),
         })),
       })), [groups])
       // 展示名重复计数：重名组（如多个都叫 RoundRobin 的轮询组）在组头补充路由 id 后缀
@@ -280,24 +302,36 @@ window.__ModuleLoader__.load({
         return counts
       }, [groups])
       if (!available) return null
-      // 渲染体：过滤后的组列表（组名或路由 id 命中显示全组模型=provider 维度搜索意图；
-      // 无搜索时全量+置顶标记）
+      // 渲染体：过滤后的组列表。两段式——归一化子串（梯队1）优先、子序列（梯队2）兜底；
+      // 组名/路由 id 命中显示全组（provider 维度搜索意图），否则按模型行过滤；
+      // 有查询时组按梯队稳定排序（子串命中组在前），组内模型行同样子串优先
       const sections = []
       for (const gi of matchIndex) {
         const all = gi.models.map((x) => x.m)
-        const rows = !qLower
-          ? all
-          : (gi.gname.includes(qLower) || gi.gid.includes(qLower)
-            ? all
-            : gi.models.filter((mi) => mi.name.includes(qLower) || mi.id.includes(qLower) || mi.desc.includes(qLower)).map((x) => x.m))
-        if (rows.length === 0) continue
-        const isTop = !qLower && recent.includes(gi.g.id)
+        let rows = all
+        let tier = 0
+        if (nq) {
+          const groupTier = bestTier(matchTier(gi.ngname, nq), matchTier(gi.ngid, nq))
+          if (groupTier > 0) {
+            tier = groupTier
+          } else {
+            const scored = gi.models
+              .map((mi) => ({ m: mi.m, t: bestTier(matchTier(mi.nname, nq), matchTier(mi.nid, nq), matchTier(mi.ndesc, nq)) }))
+              .filter((x) => x.t > 0)
+            if (scored.length === 0) continue
+            scored.sort((a, b) => a.t - b.t)
+            rows = scored.map((x) => x.m)
+            tier = scored[0].t
+          }
+        }
+        const isTop = !nq && recent.includes(gi.g.id)
         const isDup = (dupNames.get(gi.g.name || gi.g.id) || 0) > 1
-        sections.push({ g: gi.g, rows, isTop, isDup })
+        sections.push({ g: gi.g, rows, isTop, isDup, tier })
       }
+      if (nq) sections.sort((a, b) => a.tier - b.tier)
       // 置顶重排：仅无搜索时按 recent 顺序提升（未提及的按原序 append）
       let ordered = sections
-      if (!qLower && recent.length > 0) {
+      if (!nq && recent.length > 0) {
         const rank = new Map(recent.map((p, i) => [p, i]))
         ordered = sections.slice().sort((a, b) => {
           const ra = rank.has(a.g.id) ? rank.get(a.g.id) : 1e9
@@ -424,18 +458,18 @@ window.__ModuleLoader__.load({
         }, '‹ 返回'))
         modelsChildren.push(...failureRows)
         if (ordered.length === 0) {
-          modelsChildren.push(el('div', { className: 'mcm-sel-status' }, qLower ? '无匹配「' + q.trim() + '」的模型' : '暂无可用模型'))
+          modelsChildren.push(el('div', { className: 'mcm-sel-status' }, nq ? '无匹配「' + q.trim() + '」的模型' : '暂无可用模型'))
         } else {
           for (const { g, rows, isTop, isDup } of ordered) {
             modelsChildren.push(el('div', { key: g.id },
               el('div', { className: 'mcm-sel-group' },
                 isRRGroup(g) ? rrTag() : null,
-                el('span', null, hlParts(g.name || g.id, qLower)),
+                el('span', null, hlParts(g.name || g.id, nq)),
                 // 展示名重复的组补充路由 id 后缀（如多个轮询组都叫 RoundRobin）
                 isDup && g.id !== g.name ? el('span', { className: 'mcm-sel-group-id', title: g.id }, g.id) : null,
                 isTop ? el('span', { className: 'mcm-sel-recent' }, '· 最近') : null
               ),
-              rows.map((m) => modelRow(g, m, qLower))
+              rows.map((m) => modelRow(g, m, nq))
             ))
           }
         }
@@ -502,7 +536,7 @@ window.__ModuleLoader__.load({
             el('span', null, pane === 'effort'
               ? '推理档位 · ' + modelDisplay
               : sections.reduce((n, s) => n + s.rows.length, 0) + ' 个模型'),
-            el('span', null, pane === 'models' && recent.length > 0 && !qLower ? '置顶：近 7 天使用' : '')
+            el('span', null, pane === 'models' && recent.length > 0 && !nq ? '置顶：近 7 天使用' : '')
           ) : null
         ) : null
       )

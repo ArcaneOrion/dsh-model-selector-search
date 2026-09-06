@@ -3,7 +3,7 @@
 DSH 会话模型选择器（搜索增强），**独立 cordis client 插件**。替换原生 `conversation.input.model` 座位（`priority: -1` 遮蔽原生 0，官方 shadows-shipped-ui 路径），提供：
 
 - **布局对齐原生 ModelSelect**：38px 两行行（名称 14/500 + 描述 tertiary 换行）、选中无填充只留尾部 ✓、sticky 分组头、菜单卡片用原生 Menu 材质 token（specific-menu 面 + lv3 阴影 + 自适应宽度 min 240/max 420）、触发器 28px 无边框胶囊 + chevron 120ms
-- 搜索框：模型名 / id / 描述 / 供应商名（含**路由 id**，轮询组呈现名可能全部相同）子串匹配（不区分大小写），匹配片段高亮；组名或 id 命中时显示全组模型；匹配字段随目录快照预小写（useMemo）
+- 搜索框：模型名 / id / 描述 / 供应商名（含**路由 id**，轮询组呈现名可能全部相同）**两段式宽松匹配**——先归一化子串（小写 + 去分隔符 `-`/`_`/`.`/`/`/空格，「glm53」命中「GLM-5.3」），未命中再退**子序列**兜底（fzf 式按序不连续，「ds」命中「DeepSeek」）；有查询时命中组按梯队稳定排序（子串命中组在前，组内模型行同样子串优先）；纯分隔符查询视为无搜索；匹配片段高亮仅对原始子串命中生效（归一化/子序列才命中的不高亮）；组名或 id 命中时显示全组模型；匹配字段随目录快照预归一化（useMemo）
 - **轮询组标记**：model-channel-manager 的虚拟路由（id 以 `roundrobin/` 开头）在组头、模型行、pill/root 展示名统一加「轮询·」品牌色前缀（显示层标记，不改目录数据，原生 /model 弹窗不受影响）
 - **展示名重复消歧**：多个组重名（如多个轮询组都叫 RoundRobin）时，组头自动补充路由 id 后缀（等宽小字）；组 id 与展示名相同时不重复显示
 - **结构对齐原生三级面板**：打开先见 root 两行入口（「模型」/「推理档位」，推理档位在底部、仅当前模型有 reasoning 元数据时渲染，原生 .cell 40px 样式）→ 钻入模型列表（搜索在这里）或档位子列表（「供应商默认」行仅在未声明 defaultEffort 时出现）；Escape 从子面板回 root 再关闭；负载对齐原生——选模型 `{provider, model}`，换档保留 provider/model 只带 `reasoningEffort`，供应商默认省略该键；触发器显示「模型名 · 档位」
@@ -61,3 +61,4 @@ node tests/effort-memory.test.cjs   # 档位记忆：augmentRule 纯逻辑（显
 3. **菜单方向**：座位在底部 composer，CSS 用 `bottom: calc(100% + 6px)` 向上展开；`top: calc(100% + 6px)` 会把 420px 菜单整体弹到视口外。
 4. **目录加载失败必须显式报错**：directory.load 失败时 store 置 `status:'error'` + `error`（`code: message`），组件若不渲染该分支会把连接断开显示成「暂无可用模型」——与「真的没有模型」无法区分（实测：服务器死亡后残留标签页里打开菜单就是空列表）。渲染 `status==='error'` 分支后，断连一目了然。
 5. **诊断临时实例必须独立 home**：`DSH_HOME=/tmp/dsh-diag dsh --profile web --no-open --port 3081`。临时实例与主实例共用 `~/.dsh` 时会并发写同一会话日志（appendLines 是 O_APPEND 追加，两进程各自的 seq 计数器交错 → 日志中出现重复 seq → `corrupt session log: seq gap in committed region`，resume 直接拒绝）和同一 `session_projcache.json`。实测踩坑：一次共享 home 的临时实例验证把主实例某会话日志写出了 seq 重复，选择器在该会话内表现为「暂无可用模型」。
+6. **/model 弹窗与 pill 是两个选择器，宽松搜索必须打两处**：pill 是本插件 face；`/model` 是原生 commandUi `popupSelect` shell——`register` 同名抛错、`decorate` 只挂 host 目录命令、`filterOptions` 是 shell 模块内部函数（ESM 绑定插件侧改不了），插件 seam 覆盖不到，只能补丁原生。已改两处（2026-09，归一化子串 + 子序列两段式，与本插件同一语义）：① harness 源码 `packages/client/ui-commands/src/client/popup.ts` 的 `filterOptions`（未提交源码补丁，与 apiproxy `PLUGIN_SETTINGS_NAMESPACES` 同模式；`popup.client.spec.ts` 已补宽松断言，vitest 24/24 过）；② 运行时安装产物 `Agent-workerspace/pnpm-packages/node_modules/.pnpm/@deepseek-ai+dsh-client-ui-commands@0.1.1-rc.2_*/lib/client.js`（**pnpm install/升级会冲掉，需按源码重打**）。改后需重启 DSH 生效。

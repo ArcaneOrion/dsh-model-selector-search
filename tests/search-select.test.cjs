@@ -2,24 +2,30 @@
 let passed = 0, failed = 0
 const t = (name, cond) => { cond ? passed++ : (failed++, console.log('  FAIL:', name)) }
 
-// 复刻组件逻辑：matches / ordered / sections
+// 复刻组件逻辑：normSearch / matchTier / ordered / sections
+// 两段式宽松匹配：归一化子串（梯队1）优先、子序列（梯队2）兜底——「glm53」命中
+// 「GLM-5.3」，缩写「ds」命中「DeepSeek」；有查询时组按梯队稳定排序
+const normSearch = (s) => String(s || '').toLowerCase().replace(/[-_./\s]+/g, '')
+const isSubseq = (s, q) => {
+  let at = 0
+  for (let i = 0; i < s.length && at < q.length; i++) if (s[i] === q[at]) at++
+  return at === q.length
+}
+const matchTier = (hay, q) => (hay.includes(q) ? 1 : (isSubseq(hay, q) ? 2 : 0))
+const bestTier = (...tiers) => {
+  let best = 0
+  for (const t of tiers) if (t !== 0 && (best === 0 || t < best)) best = t
+  return best
+}
 const makeLogic = (recent) => {
   const recentSet = new Set(recent)
   // 组匹配含路由 id（轮询组呈现名可能全部相同，搜 id 片段才能定位到组）
-  const matches = (group, model, qLower) => {
-    if (!qLower) return true
-    return (group.name || group.id || '').toLowerCase().includes(qLower)
-      || (group.id || '').toLowerCase().includes(qLower)
-      || (model.name || '').toLowerCase().includes(qLower)
-      || (model.id || '').toLowerCase().includes(qLower)
-      || (model.description || '').toLowerCase().includes(qLower)
-  }
   const build = (groups, q) => {
-    const qLower = q.trim().toLowerCase()
+    const nq = normSearch(q)
     const dupNames = new Map()
     for (const g of groups) { const n = g.name || g.id; dupNames.set(n, (dupNames.get(n) || 0) + 1) }
     let ordered = groups
-    if (!qLower && recentSet.size > 0) {
+    if (!nq && recentSet.size > 0) {
       const rank = new Map(recent.map((p, i) => [p, i]))
       ordered = groups.slice().sort((a, b) => {
         const ra = rank.has(a.id) ? rank.get(a.id) : 1e9
@@ -29,11 +35,35 @@ const makeLogic = (recent) => {
     }
     const sections = []
     for (const g of ordered) {
-      const rows = (g.models || []).filter((m) => matches(g, m, qLower))
-      if (rows.length === 0) continue
+      const models = (g.models || []).map((m) => ({
+        m,
+        nname: normSearch(m.name),
+        nid: normSearch(m.id),
+        ndesc: normSearch(m.description),
+      }))
+      let rows, tier
+      if (!nq) {
+        rows = models.map((x) => x.m)
+        tier = 0
+      } else {
+        const groupTier = bestTier(matchTier(normSearch(g.name || g.id), nq), matchTier(normSearch(g.id), nq))
+        if (groupTier > 0) {
+          tier = groupTier
+          rows = models.map((x) => x.m)
+        } else {
+          const scored = models
+            .map((mi) => ({ m: mi.m, t: bestTier(matchTier(mi.nname, nq), matchTier(mi.nid, nq), matchTier(mi.ndesc, nq)) }))
+            .filter((x) => x.t > 0)
+          if (scored.length === 0) continue
+          scored.sort((a, b) => a.t - b.t)
+          rows = scored.map((x) => x.m)
+          tier = scored[0].t
+        }
+      }
       const isDup = (dupNames.get(g.name || g.id) || 0) > 1 && g.id !== g.name
-      sections.push({ g, rows, isTop: !qLower && recentSet.has(g.id), isDup })
+      sections.push({ g, rows, isTop: !nq && recentSet.has(g.id), isDup, tier })
     }
+    if (nq) sections.sort((a, b) => a.tier - b.tier)
     return { ordered, sections }
   }
   return build
@@ -107,6 +137,43 @@ const makeLogic = (recent) => {
   const build = makeLogic([])
   const { sections } = build(groups, 'nvidia')
   t('T4 组名匹配显示全组模型', sections.length === 1 && sections[0].rows.length === 2)
+}
+
+// T5: 宽松匹配——归一化子串（小写 + 去分隔符 - _ . 空白）
+{
+  const groups = [
+    { id: 'zhipu', name: 'Zhipu', models: [{ id: 'glm-5.3', name: 'GLM 5.3', description: '旗舰' }] },
+  ]
+  const build = makeLogic([])
+  t('T5a 搜 glm53 命中 glm-5.3', build(groups, 'glm53').sections.length === 1 && build(groups, 'glm53').sections[0].rows.length === 1)
+  t('T5b 大小写穿透：GLM5 命中', build(groups, 'GLM5').sections.length === 1)
+  t('T5c 反向带分隔符：glm-5.3 命中', build(groups, 'glm-5.3').sections.length === 1)
+  t('T5d 组路由 id 归一化命中显示全组', (() => {
+    const g2 = [{ id: 'roundrobin/coding', name: 'RoundRobin', models: [{ id: 'x', name: 'X' }] }]
+    const s = makeLogic([])(g2, 'roundrobincoding').sections
+    return s.length === 1 && s[0].rows.length === 1
+  })())
+  t('T5e 纯分隔符查询 = 全量', build(groups, '-_. ').sections.length === 1)
+  t('T5f 不相关查询仍排除', build(groups, 'zzz').sections.length === 0)
+}
+
+// T6: 子序列兜底（梯队2）与梯队排序——「ds」命中 DeepSeek（缩写/首字母场景）
+{
+  const groups = [
+    { id: 'bbb', name: 'DeepSeek', models: [{ id: 'deepseek-chat', name: 'DeepSeek Chat' }] },
+    { id: 'aaa', name: 'Aaa', models: [{ id: 'dsv4-f-0731', name: 'DSV4 F' }] },
+  ]
+  const build = makeLogic([])
+  const { sections } = build(groups, 'ds')
+  t('T6a ds 子序列命中 DeepSeek 组', sections.some((s) => s.g.id === 'bbb' && s.rows.length === 1))
+  t('T6b ds 子串命中的组排在前', sections[0].g.id === 'aaa' && sections[1].g.id === 'bbb')
+  t('T6c 组内梯队：子串命中模型行优先', (() => {
+    const g2 = [{ id: 'mix', name: 'Mix', models: [{ id: 'mo-dels', name: 'B' }, { id: 'ds-fast', name: 'A' }] }]
+    const s = makeLogic([])(g2, 'ds').sections[0]
+    return s.rows[0].id === 'ds-fast' && s.rows[1].id === 'mo-dels'
+  })())
+  t('T6d 单字符查询子序列≡子串不放大噪音', build(groups, 'z').sections.length === 0)
+  t('T6e 无查询不触发梯队排序', build(groups, '').sections.map((s) => s.g.id).join('') === 'bbbaaa')
 }
 
 
@@ -272,21 +339,8 @@ const applyIfChanged = (prev, order) => (prev.join('\u0000') === order.join('\u0
 }
 
 
-// DF: 选新模型默认思考档（含 max 用 max，否则最高档末项；无 reasoning 不带键）
-{
-  const pickDefaultEffort = (m) => {
-    if (!m || !m.reasoning) return undefined
-    const ids = (m.reasoning.efforts || []).map((l) => l.id)
-    if (ids.length === 0) return undefined
-    return ids.includes('max') ? 'max' : ids[ids.length - 1]
-  }
-  t('DF1 含 max 用 max', pickDefaultEffort({ reasoning: { efforts: [{ id: 'low' }, { id: 'medium' }, { id: 'max' }] } }) === 'max')
-  t('DF2 无 max 取最高档末项', pickDefaultEffort({ reasoning: { efforts: [{ id: 'low' }, { id: 'medium' }, { id: 'high' }] } }) === 'high')
-  t('DF3 无 reasoning undefined（负载不带 effort 键）', pickDefaultEffort({ id: 'x' }) === undefined)
-  t('DF4 efforts 空 undefined', pickDefaultEffort({ reasoning: { efforts: [] } }) === undefined)
-  const payload = (() => { const e = pickDefaultEffort({ reasoning: { efforts: [{ id: 'low' }, { id: 'max' }] } }); const p = { provider: 'a', model: 'm' }; if (e !== undefined) p.reasoningEffort = e; return p })()
-  t('DF5 负载形状', JSON.stringify(payload) === JSON.stringify({ provider: 'a', model: 'm', reasoningEffort: 'max' }))
-}
+// DF 块已移除：选模型自动填档（pickDefaultEffort）策略收口到 modelDirectories
+// 拦截层（思考档位记忆），回归见 tests/effort-memory.test.cjs
 
 
 // RR: 轮询组「轮询·」前缀标记（显示层，不改数据）
