@@ -288,6 +288,17 @@ const applyIfChanged = (prev, order) => (prev.join('\u0000') === order.join('\u0
   t('DF5 负载形状', JSON.stringify(payload) === JSON.stringify({ provider: 'a', model: 'm', reasoningEffort: 'max' }))
 }
 
+
+// RR: 轮询组「轮询·」前缀标记（显示层，不改数据）
+{
+  const isRRGroup = (g) => typeof (g && g.id) === 'string' && g.id.startsWith('roundrobin/')
+  t('RR1 roundrobin/ 前缀识别', isRRGroup({ id: 'roundrobin/minimax-m3' }) === true)
+  t('RR2 普通供应商不标', isRRGroup({ id: 'bohe' }) === false)
+  t('RR3 空 id 不标', isRRGroup({}) === false && isRRGroup(null) === false)
+  const display = (g, label) => (isRRGroup(g) ? '轮询·' : '') + label
+  t('RR4 pill/root 展示名前缀', display({ id: 'roundrobin/g1' }, 'g1') === '轮询·g1' && display({ id: 'bohe' }, 'BOHE') === 'BOHE')
+}
+
 console.log(`\n${passed} passed, ${failed} failed`)
   process.exit(failed > 0 ? 1 : 0)
 })

@@ -4,6 +4,7 @@ DSH 会话模型选择器（搜索增强），**独立 cordis client 插件**。
 
 - **布局对齐原生 ModelSelect**：38px 两行行（名称 14/500 + 描述 tertiary 换行）、选中无填充只留尾部 ✓、sticky 分组头、菜单卡片用原生 Menu 材质 token（specific-menu 面 + lv3 阴影 + 自适应宽度 min 240/max 420）、触发器 28px 无边框胶囊 + chevron 120ms
 - 搜索框：模型名 / id / 描述 / 供应商名（含**路由 id**，轮询组呈现名可能全部相同）子串匹配（不区分大小写），匹配片段高亮；组名或 id 命中时显示全组模型；匹配字段随目录快照预小写（useMemo）
+- **轮询组标记**：model-channel-manager 的虚拟路由（id 以 `roundrobin/` 开头）在组头、模型行、pill/root 展示名统一加「轮询·」品牌色前缀（显示层标记，不改目录数据，原生 /model 弹窗不受影响）
 - **展示名重复消歧**：多个组重名（如多个轮询组都叫 RoundRobin）时，组头自动补充路由 id 后缀（等宽小字）；组 id 与展示名相同时不重复显示
 - **结构对齐原生三级面板**：打开先见 root 两行入口（「模型」/「推理档位」，推理档位在底部、仅当前模型有 reasoning 元数据时渲染，原生 .cell 40px 样式）→ 钻入模型列表（搜索在这里）或档位子列表（「供应商默认」行仅在未声明 defaultEffort 时出现）；Escape 从子面板回 root 再关闭；负载对齐原生——选模型 `{provider, model}`，换档保留 provider/model 只带 `reasoningEffort`，供应商默认省略该键；触发器显示「模型名 · 档位」
 - 失败可见化：`failures` 每供应商警告行；选择被拒（注入面 false）时读 store.error 在菜单内显示，列表保留（load 失败才整页报错，用 lastAction 区分——select 失败也会把 status 置 error）

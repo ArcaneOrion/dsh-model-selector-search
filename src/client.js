@@ -48,6 +48,7 @@ window.__ModuleLoader__.load({
 .mcm-sel-desc { overflow:hidden; color:var(--dsw-alias-label-tertiary); font-size:12px; line-height:18px; text-overflow:ellipsis; white-space:nowrap; }
 .mcm-sel-check { display:grid; place-items:center; flex:0 0 18px; color:var(--dsw-alias-label-primary); font-size:12px; }
 .mcm-sel-hl { color:var(--dsw-alias-brand-primary); font-weight:600; }
+.mcm-sel-rrtag { color:var(--dsw-alias-brand-primary); font-size:10px; font-weight:500; flex-shrink:0; }
 /* 档位入口行：对齐原生 .cell——40px、label 左 / 当前档右对齐 tertiary、右 chevron */
 .mcm-sel-effrow { box-sizing:border-box; display:flex; align-items:center; gap:8px; width:auto; min-width:100%; height:40px; padding:0 10px; border:none; border-radius:10px; background:transparent; color:var(--dsw-alias-label-primary); font:inherit; font-size:14px; line-height:22px; cursor:pointer; text-align:left; }
 .mcm-sel-effrow:hover { background:var(--dsw-alias-interactive-bg-hover); }
@@ -107,6 +108,12 @@ window.__ModuleLoader__.load({
       if (i < 0) return [s]
       return [s.slice(0, i), el('span', { className: 'mcm-sel-hl' }, s.slice(i, i + q.length)), s.slice(i + q.length)]
     }
+
+    // 轮询组标记：model-channel-manager 的虚拟路由 id 以 roundrobin/ 开头。
+    // 显示层加「轮询·」前缀（组头/模型行/pill），不改目录数据——原生 /model 弹窗不受影响
+    const RR_PREFIX = 'roundrobin/'
+    const isRRGroup = (g) => typeof (g && g.id) === 'string' && g.id.startsWith(RR_PREFIX)
+    const rrTag = () => el('span', { className: 'mcm-sel-rrtag' }, '轮询·')
 
     function SearchModelSelect(props) {
       const available = props.available !== false
@@ -248,9 +255,10 @@ window.__ModuleLoader__.load({
       // 展示名重复（如多个轮询组都叫 RoundRobin）时，模型行/触发器/root 值都要
       // 能自证身份：补充模型 id（对轮询组即组 id，如 minimax-m3）
       const chosenDup = currentChoice ? (dupNames.get(currentChoice.m.name || currentChoice.m.id) || 0) > 1 : false
-      const modelDisplay = currentChoice && chosenDup && currentChoice.m.id !== modelLabel
-        ? modelLabel + ' · ' + currentChoice.m.id
-        : modelLabel
+      const modelDisplay = (currentChoice && isRRGroup(currentChoice.g) ? '轮询·' : '')
+        + (currentChoice && chosenDup && currentChoice.m.id !== modelLabel
+          ? modelLabel + ' · ' + currentChoice.m.id
+          : modelLabel)
       // 注入面的 select 把失败吞成 false 值（不 reject），错误详情在 store.error——
       // 对齐原生 settleSelection：false 时读 store.error 展示，成功才关菜单
       const settleSelection = (accepted) => {
@@ -325,7 +333,9 @@ window.__ModuleLoader__.load({
           onClick: () => choose(g.id, m.id)
         },
           el('span', { className: 'mcm-sel-copy' },
-            el('span', { className: 'mcm-sel-name' }, hlParts(m.name || m.id, q2)),
+            el('span', { className: 'mcm-sel-name' },
+              isRRGroup(g) ? rrTag() : null,
+              hlParts(m.name || m.id, q2)),
             desc ? el('span', { className: 'mcm-sel-desc' }, desc) : null
           ),
           sel ? el('span', { className: 'mcm-sel-check' }, '✓') : null
@@ -352,6 +362,7 @@ window.__ModuleLoader__.load({
           for (const { g, rows, isTop, isDup } of ordered) {
             modelsChildren.push(el('div', { key: g.id },
               el('div', { className: 'mcm-sel-group' },
+                isRRGroup(g) ? rrTag() : null,
                 el('span', null, hlParts(g.name || g.id, qLower)),
                 // 展示名重复的组补充路由 id 后缀（如多个轮询组都叫 RoundRobin）
                 isDup && g.id !== g.name ? el('span', { className: 'mcm-sel-group-id', title: g.id }, g.id) : null,
