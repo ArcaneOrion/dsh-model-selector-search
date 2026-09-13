@@ -163,7 +163,13 @@ window.__ModuleLoader__.load({
         return { payload: selection }
       const key = selection.provider + '::' + selection.model
       const incoming = selection.reasoningEffort
-      if (incoming !== undefined && incoming !== declared.defaultEffort)
+      // `=== defaultEffort` 曾经是「自动值」的近似判别，但档位子面板把 defaultEffort 本身
+      // 也列为可选项：defaultEffort 为 max 的模型上，用户点 Max 会与自动填值同形，被改写成
+      // 记忆档位（如 xhigh）—— 而该次改写不记记忆，记忆恒为 xhigh，于是「点 Max 永远
+      // 不变、且无任何报错」。max 是语义最顶层档位、不存在比它更精确的自动默认，故显式
+      // max 一律按显式选择放行并记入记忆；其余档位沿用原近似。
+      const explicit = incoming !== undefined && (incoming !== declared.defaultEffort || incoming === 'max')
+      if (explicit)
         return { payload: selection, remember: { key, effort: incoming } }
       const remembered = memory ? memory[key] : undefined
       const effort = (remembered != null && declared.efforts.some((l) => l.id === remembered))
