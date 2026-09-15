@@ -29,12 +29,34 @@ DSH 理念：一切皆插件、slots 即替换 seam、每个占座者一个独�
 
 ## 挂载
 
-`~/.dsh/profiles/web/package.json`：
+从 npm 装（发布版）：
+
+```bash
+dsh plugin --profile web add @arcaneorion/dsh-model-selector-search
+# 然后重启 dsh --profile web 并刷新页面
+```
+
+本地开发用 `link:`（改源码即时生效）——`~/.dsh/profiles/web/package.json`：
 - `dependencies` 加 `"@arcaneorion/dsh-model-selector-search": "link:/home/arcaneorion/AI/AI-DSH/plugin/model-selector-search"`
 - `dsh.profile.bundles` 加 `"@arcaneorion/dsh-model-selector-search"`
 - `pnpm install` 后重启 `dsh --profile web`
 
 client-only 插件：无 host 半、无 cordis.patch.yml（client-modules 经 `exports['./client']` 自动扫描挂载）。
+
+## 兼容性（DSH 版本）
+
+本包在 **DSH `0.1.1-rc.2`**（`dsh --version`）上开发与实测，宿主侧依赖按该版本**精确钉住**：
+
+| 宿主包 | 声明 | 用途 |
+|---|---|---|
+| `@deepseek-ai/dsh-client-ui-model-selection` | `0.1.1-rc.2` | 复刻其 `inject(sessionId)` 契约、包装 `modelDirectories.directoryFor().select`（档位记忆拦截层） |
+| `@deepseek-ai/dsh-client-ui-conversation` | `0.1.1-rc.2` | 座位 `conversation.input.model`（`priority: -1` 遮蔽） |
+| `@deepseek-ai/dsh-client-connection` | `0.1.1-rc.2` | `settings.describe` 读健康流水（近 7 天置顶、档位记忆） |
+| `@deepseek-ai/cordis` | `^4.0.2` | 插件生命周期 |
+| `react` | `^18.3.1` | client 半 `require('react')`（平台模块表键名） |
+
+本插件是最吃宿主契约的一个：它刻意贴着 `dsh-client-ui-model-selection` 的 private-ish seam 工作，
+**跨 DSH 版本最先失效的就是它**。换版本请先跑一遍「打开菜单 / 搜索 / 换档记忆」再放宽 peer。
 
 ## 已知边界
 
