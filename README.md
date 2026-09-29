@@ -45,15 +45,26 @@ client-only 插件：无 host 半、无 cordis.patch.yml（client-modules 经 `e
 
 ## 兼容性（DSH 版本）
 
-本包在 **DSH `0.1.1-rc.2`**（`dsh --version`）上开发与实测，宿主侧依赖按该版本**精确钉住**：
+> **当前工作树已适配 DSH `0.2.0-rc.1`**（peer 按 `0.2.0-rc.1` 声明；版本 `0.3.0`）。下列 `0.1.1-rc.2` 记录仅作历史基线。
 
 | 宿主包 | 声明 | 用途 |
 |---|---|---|
-| `@deepseek-ai/dsh-client-ui-model-selection` | `0.1.1-rc.2` | 复刻其 `inject(sessionId)` 契约、包装 `modelDirectories.directoryFor().select`（档位记忆拦截层） |
-| `@deepseek-ai/dsh-client-ui-conversation` | `0.1.1-rc.2` | 座位 `conversation.input.model`（`priority: -1` 遮蔽） |
-| `@deepseek-ai/dsh-client-connection` | `0.1.1-rc.2` | `settings.describe` 读健康流水（近 7 天置顶、档位记忆） |
-| `@deepseek-ai/cordis` | `^4.0.2` | 插件生命周期 |
+| `@deepseek-ai/dsh-client-ui-model-selection` | `0.2.0-rc.1` | 复刻其 `inject(sessionId)` 契约、包装 `modelDirectories.directoryFor().select`（档位记忆拦截层） |
+| `@deepseek-ai/dsh-client-ui-conversation` | `0.2.0-rc.1` | 座位 `conversation.input.model`（`priority: -1` 遮蔽） |
+| `@deepseek-ai/dsh-api-remotes` | `0.2.0-rc.1` | `ctx.remote.settings` 读健康流水（近 7 天置顶、档位记忆） |
+| `@deepseek-ai/cordis` | `^4.0.4` | 插件生命周期 |
 | `react` | `^18.3.1` | client 半 `require('react')`（平台模块表键名） |
+
+### 0.1.1-rc.2 → 0.2.0-rc.1 的三处变更
+
+1. **远程面由 `connection.api` 改为 `ctx.remote`**，且参数从对象改位置参数、结果统一为 `RemoteResult`。
+   本插件内置一层兼容门面（`makeLegacyApi`）保留旧的 `{result:{ok,value}}` 调用形状。
+2. **settings 命名空间 = 插件行 id**：旧的 `model-channels` / `model-channel-health` 两套命名空间
+   现由 model-channel-manager 的实例配置承载（`groups` / `providerOrder` / `effortMemory` / `health`），
+   门面把它们合成回旧视图，故档位记忆仍然可用。
+3. **客户端服务按调用方 fiber 校验依赖**：调用 `modelDirectories.directoryFor()` 的一方必须自己声明
+   `inject: ['remote.session', ...]`，否则抛 `cannot get property "remote.session" without inject`，
+   座位渲染直接崩（原生已被遮蔽 → 整个座位消失）。本插件已在插件级 inject 中声明。
 
 本插件是最吃宿主契约的一个：它刻意贴着 `dsh-client-ui-model-selection` 的 private-ish seam 工作，
 **跨 DSH 版本最先失效的就是它**。换版本请先跑一遍「打开菜单 / 搜索 / 换档记忆」再放宽 peer。
@@ -83,4 +94,5 @@ node tests/effort-memory.test.cjs   # 档位记忆：augmentRule 纯逻辑（显
 3. **菜单方向**：座位在底部 composer，CSS 用 `bottom: calc(100% + 6px)` 向上展开；`top: calc(100% + 6px)` 会把 420px 菜单整体弹到视口外。
 4. **目录加载失败必须显式报错**：directory.load 失败时 store 置 `status:'error'` + `error`（`code: message`），组件若不渲染该分支会把连接断开显示成「暂无可用模型」——与「真的没有模型」无法区分（实测：服务器死亡后残留标签页里打开菜单就是空列表）。渲染 `status==='error'` 分支后，断连一目了然。
 5. **诊断临时实例必须独立 home**：`DSH_HOME=/tmp/dsh-diag dsh --profile web --no-open --port 3081`。临时实例与主实例共用 `~/.dsh` 时会并发写同一会话日志（appendLines 是 O_APPEND 追加，两进程各自的 seq 计数器交错 → 日志中出现重复 seq → `corrupt session log: seq gap in committed region`，resume 直接拒绝）和同一 `session_projcache.json`。实测踩坑：一次共享 home 的临时实例验证把主实例某会话日志写出了 seq 重复，选择器在该会话内表现为「暂无可用模型」。
-6. **/model 弹窗与 pill 是两个选择器，宽松搜索必须打两处**：pill 是本插件 face；`/model` 是原生 commandUi `popupSelect` shell——`register` 同名抛错、`decorate` 只挂 host 目录命令、`filterOptions` 是 shell 模块内部函数（ESM 绑定插件侧改不了），插件 seam 覆盖不到，只能补丁原生。已改两处（2026-09，归一化子串 + 子序列两段式，与本插件同一语义）：① harness 源码 `packages/client/ui-commands/src/client/popup.ts` 的 `filterOptions`（未提交源码补丁，与 apiproxy `PLUGIN_SETTINGS_NAMESPACES` 同模式；`popup.client.spec.ts` 已补宽松断言，vitest 24/24 过）；② 运行时安装产物 `Agent-workerspace/pnpm-packages/node_modules/.pnpm/@deepseek-ai+dsh-client-ui-commands@0.1.1-rc.2_*/lib/client.js`（**pnpm install/升级会冲掉，需按源码重打**）。改后需重启 DSH 生效。
+6. **/model 弹窗与 pill 是两个选择器，宽松搜索必须打两处**：pill 是本插件 face；`/model` 是原生 commandUi `popupSelect` shell——`register` 同名抛错、`decorate` 只挂 host 目录命令、`filterOptions` 是 shell 模块内部函数（ESM 绑定插件侧改不了），插件 seam 覆盖不到，只能补丁原生。曾在 `0.1.1-rc.2` 上打过两处（harness 源码 `packages/client/ui-commands/src/client/popup.ts` 的 `filterOptions`，以及运行时产物 `@deepseek-ai+dsh-client-ui-commands@0.1.1-rc.2/lib/client.js`）。
+   > **升级到 0.2.0-rc.1 后该补丁已失效**：运行时产物换成 `@deepseek-ai+dsh-client-ui-commands@0.2.0-rc.1`，实测其中不含归一化/子序列逻辑——`/model` 弹窗的搜索退回原生平铺匹配，**pill（本插件）不受影响**。要恢复需按 0.2 源码重新打补丁并重启。

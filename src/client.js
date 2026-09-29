@@ -16,6 +16,43 @@ window.__ModuleLoader__.load({
     const { createElement: el, useState, useEffect, useRef, useMemo, useSyncExternalStore } = require('react')
     let apiRef = null
 
+    // dsh 0.2：客户端远程调用由 connection.api 改为 ctx.remote，且参数由对象改为位置参数、
+    // 结果统一为 RemoteResult。这里保留 0.1 的调用形状，避免大范围改写调用点。
+    // 0.2 的 settings 命名空间恒等于「插件行 id」；模型通道管理插件的两套旧命名空间
+    // （model-channels / model-channel-health）现由其实例配置承载，在此合成回旧视图。
+    const NS_MCM = 'model-channel-manager'
+    const makeLegacyApi = (remote) => {
+      const readMcm = async () => {
+        const res = await remote.settings.describe()
+        if (!res || res.ok !== true) return null
+        return ((res.value && res.value.namespaces) || []).find((n) => n && n.ns === NS_MCM) || null
+      }
+      return {
+        settings: {
+          describe: async () => {
+            const res = await remote.settings.describe()
+            if (!res || res.ok !== true) return { result: res || { ok: false } }
+            const namespaces = (res.value && res.value.namespaces) || []
+            const mcm = namespaces.find((n) => n && n.ns === NS_MCM)
+            const value = (mcm && mcm.value) || {}
+            return { result: { ok: true, value: { namespaces: [...namespaces,
+              { ns: 'model-channels', value: { groups: value.groups || [], providerOrder: value.providerOrder || [], effortMemory: value.effortMemory || {} }, user: {} },
+              { ns: 'model-channel-health', value: value.health || {}, user: {} },
+            ] } } }
+          },
+          update: async (args) => {
+            const patch = (args && args.patch) || {}
+            if ((args && args.ns) === 'model-channels') {
+              return { result: await remote.settings.update(NS_MCM, patch, undefined) }
+            }
+            const row = await readMcm()
+            const health = (row && row.value && row.value.health) || {}
+            return { result: await remote.settings.update(NS_MCM, { health: Object.assign({}, health, patch) }, undefined) }
+          },
+        },
+      }
+    }
+
     const CSS = `
 .mcm-sel-root { position:relative; min-width:0; }
 /* 触发器：对齐原生 ToggleButton 胶囊——28px、无边框透明、13/20/500 secondary */
@@ -221,6 +258,15 @@ window.__ModuleLoader__.load({
     }
 
     function SearchModelSelect(props) {
+      try {
+        return renderSearchModelSelect(props)
+      } catch (e) {
+        try { document.body.dataset.mcmSelRenderErr = String((e && e.stack) || e) } catch (_e) { /* noop */ }
+        throw e
+      }
+    }
+
+    function renderSearchModelSelect(props) {
       const available = props.available !== false
       const directory = props.directory
       const load = props.load
@@ -549,8 +595,7 @@ window.__ModuleLoader__.load({
     }
 
     function apply(ctx) {
-      const connection = ctx.get('connection')
-      apiRef = connection && connection.api ? connection.api : null
+      ctx.inject(['remote'], (scope) => { apiRef = makeLegacyApi(scope.remote) })
       ctx.effect(() => {
         const tag = document.createElement('style')
         tag.dataset.mcmStyle = ''
@@ -588,6 +633,7 @@ window.__ModuleLoader__.load({
             id: 'mcm-selector-search',
             priority: -1,
             inject: (sessionId) => {
+              try {
               const directory = models.directoryFor(sessionId)
               const available = sessions.subagentAddress(sessionId) === undefined
               return {
@@ -597,8 +643,13 @@ window.__ModuleLoader__.load({
                   if (available) directory.load().catch(() => { /* surfaced on the store */ })
                 },
                 select: (selection) => available
-                  ? directory.select(selection).then(() => true, () => false)
+                  // 0.2 的 directory.select 返回 RemoteResult；本组件沿用「是否被接受」的布尔语义
+                  ? directory.select(selection).then((r) => (r === undefined ? true : r.ok === true), () => false)
                   : Promise.resolve(false),
+              }
+              } catch (e) {
+                document.body.dataset.mcmSelInjectErr = String((e && e.stack) || e)
+                throw e
               }
             },
           },
@@ -607,6 +658,9 @@ window.__ModuleLoader__.load({
       })
     }
 
-    return { name: 'model-selector-search', inject: ['slots', 'connection'], apply }
+    // dsh 0.2：客户端服务方法按「调用方 fiber」校验依赖，调用 modelDirectories /
+    // directory.select 的一方必须自己声明 remote.session，否则抛
+    // `cannot get property "remote.session" without inject`。
+    return { name: 'model-selector-search', inject: ['slots', 'modelDirectories', 'sessions', 'remote', 'remote.session', 'remote.settings'], apply }
   },
 })
